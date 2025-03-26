@@ -29,13 +29,13 @@ You can also build and run the CLI using Docker:
 
 ```bash
 # Build the Docker image
-docker-compose build
+docker compose build
 
 # Run the CLI (replace [command] with any soundness-cli command)
-docker-compose run --rm soundness-cli [command]
+docker compose run --rm soundness-cli [command]
 
 # Example: Generate a new key pair
-docker-compose run --rm soundness-cli generate-key --name my-key
+docker compose run --rm soundness-cli generate-key --name my-key
 ```
 Wallet data will be saved in folder `.soundness`
 ## Manual Installation

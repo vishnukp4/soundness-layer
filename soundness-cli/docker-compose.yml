@@ -1,0 +1,13 @@
+services:
+  soundness-cli:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./.soundness:/home/soundness/.soundness
+      - ${PWD}/.soundness:/workspace
+    working_dir: /workspace
+    environment:
+      - RUST_LOG=info
+    stdin_open: true
+    tty: true

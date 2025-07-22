@@ -17,7 +17,6 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -26,12 +25,14 @@ const NONCE_LENGTH: usize = 12;
 const KEY_LENGTH: usize = 32;
 const ITERATIONS: u32 = 100_000;
 
+// Add a static variable to store the password and key store hash
 static PASSWORD_CACHE: Lazy<Mutex<Option<(String, String)>>> = Lazy::new(|| Mutex::new(None));
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(short, long, default_value = "https://testnet.soundness.xyz")]
+    /// API endpoint URL (default: http://localhost:3000)
+    #[arg(short, long, default_value = "http://localhost:3000")]
     endpoint: String,
 
     #[command(subcommand)]
@@ -40,67 +41,45 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Generate a new key pair
     GenerateKey {
+        /// Name for the key pair
         #[arg(short, long)]
         name: String,
     },
+    /// List all saved key pairs
     ListKeys,
+    /// Send a proof and ELF file to the server
     Send {
+        /// Path to the proof file
         #[arg(short = 'p', long)]
         proof_file: PathBuf,
 
+        /// Path to the ELF file
         #[arg(short = 'l', long)]
-        elf_file: Option<PathBuf>,
+        elf_file: PathBuf,
 
+        /// Name of the key pair to use for signing
         #[arg(short = 'k', long)]
         key_name: String,
 
-        #[arg(short = 's', long)]
+        /// Proving system to use (default: sp1)
+        #[arg(short = 's', long, default_value = "sp1")]
         proving_system: ProvingSystem,
 
+        /// Optional JSON payload for additional proving system parameters (useful for Ligetron)
         #[arg(short = 'd', long)]
         payload: Option<serde_json::Value>,
-
-        #[arg(short = 'g', long, value_parser = clap::value_parser!(Game))]
-        game: Option<Game>,
     },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum ProvingSystem {
     Sp1,
-    Ligetron,
+    Circom,
     Risc0,
-    Noir,
     Starknet,
-    Miden,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-enum Game {
-    EightQueens,
-    TicTacToe,
-}
-
-impl FromStr for Game {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "tic-tac-toe" | "tictactoe" => Ok(Game::TicTacToe),
-            "8-queens" | "8queens" | "eight-queens" | "eightqueens" => Ok(Game::EightQueens),
-            _ => Err(format!("Invalid game: {}. Valid games are: tic-tac-toe, tictactoe, 8-queens, 8queens, eight-queens, eightqueens", s)),
-        }
-    }
-}
-
-impl std::fmt::Display for Game {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Game::EightQueens => write!(f, "8queens"),
-            Game::TicTacToe => write!(f, "tictactoe"),
-        }
-    }
+    Ligetron,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -370,23 +349,27 @@ fn format_server_response(response: &ServerResponse) {
     println!("═══════════════════════════");
 
     // Status and message
-    let (icon, text) = if response.status == "success" {
-        ("✅", response.status.to_uppercase())
+    let status_icon = if response.status == "success" {
+        "✅"
     } else {
-        ("❌", response.status.to_uppercase())
+        "❌"
     };
-    println!("{} Status: {}", icon, text);
+    println!("{} Status: {}", status_icon, response.status.to_uppercase());
     println!("📝 Message: {}", response.message);
     println!("🔧 Proving System: {}", response.proving_system);
 
     // Proof verification status
     if let Some(verification_status) = response.proof_verification_status {
-        let (icon, text) = if verification_status {
-            ("✅", "SUCCESS")
-        } else {
-            ("❌", "FAILED")
-        };
-        println!("🔍 Proof Verification: {} {}", icon, text);
+        let verification_icon = if verification_status { "✅" } else { "❌" };
+        println!(
+            "🔍 Proof Verification: {} {}",
+            verification_icon,
+            if verification_status {
+                "SUCCESS"
+            } else {
+                "FAILED"
+            }
+        );
     }
 
     // Sui transaction details
@@ -409,11 +392,11 @@ fn format_server_response(response: &ServerResponse) {
 
     // Blob IDs
     if let Some(proof_blob_id) = &response.proof_data_blob_id {
-        println!("📦 Proof Blob ID: {}", proof_blob_id);
+        println!("📦 Proof Data Blob ID: {}", proof_blob_id);
     }
 
     if let Some(vk_blob_id) = &response.vk_blob_id {
-        println!("🔑 Program Blob ID: {}", vk_blob_id);
+        println!("🔑 VK Blob ID: {}", vk_blob_id);
     }
 
     // Links
@@ -450,25 +433,14 @@ async fn main() -> Result<()> {
             key_name,
             proving_system,
             payload,
-            game,
         } => {
-            // Validate that either a game flag or ELF file is provided
-            if game.is_none() && elf_file.is_none() {
-                anyhow::bail!("❌ Error: When no game flag is provided, an ELF file (-l/--elf-file) must be specified.\n\nUsage:\n  - With game: soundness-cli send -p proof.bin -g tic-tac-toe -k my_key\n  - With ELF:  soundness-cli send -p proof.bin -l program.elf -k my_key");
-            }
-
             let proof_input = proof_file.to_string_lossy().to_string();
+            let elf_input = elf_file.to_string_lossy().to_string();
+
+            // Determine if inputs are blob IDs or file paths
             let proof_is_blob = is_blob_id(&proof_input);
+            let elf_is_blob = is_blob_id(&elf_input);
 
-            let (elf_input, elf_is_blob) = if let Some(ref elf_path) = elf_file {
-                let elf_input = elf_path.to_string_lossy().to_string();
-                let elf_is_blob = is_blob_id(&elf_input);
-                (Some(elf_input), elf_is_blob)
-            } else {
-                (None, false)
-            };
-
-            // Print the inputs to the user
             println!("🔍 Analyzing inputs...");
             if proof_is_blob {
                 println!("📁 Proof: Detected as Walrus Blob ID: {}", proof_input);
@@ -476,17 +448,10 @@ async fn main() -> Result<()> {
                 println!("📁 Proof: Detected as file path: {}", proof_input);
             }
 
-            match &elf_input {
-                Some(elf_str) => {
-                    if elf_is_blob {
-                        println!("📁 ELF Program: Detected as Walrus Blob ID: {}", elf_str);
-                    } else {
-                        println!("📁 ELF Program: Detected as file path: {}", elf_str);
-                    }
-                }
-                None => {
-                    println!("📁 ELF Program: Not provided (using game mode)");
-                }
+            if elf_is_blob {
+                println!("📁 ELF: Detected as Walrus Blob ID: {}", elf_input);
+            } else {
+                println!("📁 ELF: Detected as file path: {}", elf_input);
             }
 
             let reading_pb = create_progress_bar("📂 Processing inputs...");
@@ -506,24 +471,18 @@ async fn main() -> Result<()> {
                 (Some(BASE64.encode(&content)), None, filename)
             };
 
-            // Handle optional ELF input
-            let (elf_content, elf_blob_id, elf_filename) = match (&elf_input, &elf_file) {
-                (Some(elf_str), Some(elf_path)) => {
-                    if elf_is_blob {
-                        (None, Some(elf_str.clone()), "program.elf".to_string())
-                    } else {
-                        let content = fs::read(elf_path).with_context(|| {
-                            format!("Failed to read ELF file: {}", elf_path.display())
-                        })?;
-                        let filename = elf_path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("unknown")
-                            .to_string();
-                        (Some(BASE64.encode(&content)), None, filename)
-                    }
-                }
-                _ => (None, None, "".to_string()),
+            // Handle ELF input
+            let (elf_content, elf_blob_id, elf_filename) = if elf_is_blob {
+                (None, Some(elf_input.clone()), "program.elf".to_string())
+            } else {
+                let content = fs::read(&elf_file)
+                    .with_context(|| format!("Failed to read ELF file: {}", elf_file.display()))?;
+                let filename = elf_file
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                (Some(BASE64.encode(&content)), None, filename)
             };
 
             reading_pb.finish_with_message("📂 Inputs processed successfully");
@@ -531,9 +490,9 @@ async fn main() -> Result<()> {
             // Create the request body with support for both file content and blob IDs
             let mut request_body = serde_json::json!({
                 "proof_filename": proof_filename,
+                "elf_filename": elf_filename,
                 "proving_system": format!("{:?}", proving_system).to_lowercase(),
                 "payload": payload.unwrap_or_default(),
-                "game": game.unwrap_or(Game::EightQueens).to_string(),
             });
 
             // Add proof data (either content or blob ID)
@@ -543,15 +502,11 @@ async fn main() -> Result<()> {
                 request_body["proof_blob_id"] = serde_json::Value::String(blob_id);
             }
 
-            // Add ELF data only if provided (either content or blob ID)
-            if !elf_filename.is_empty() {
-                request_body["elf_filename"] = serde_json::Value::String(elf_filename.clone());
-
-                if let Some(content) = elf_content {
-                    request_body["elf"] = serde_json::Value::String(content.clone());
-                } else if let Some(blob_id) = elf_blob_id {
-                    request_body["elf_blob_id"] = serde_json::Value::String(blob_id);
-                }
+            // Add ELF data (either content or blob ID)
+            if let Some(content) = elf_content {
+                request_body["elf"] = serde_json::Value::String(content.clone());
+            } else if let Some(blob_id) = elf_blob_id {
+                request_body["elf_blob_id"] = serde_json::Value::String(blob_id);
             }
 
             // Create canonical string for signing
@@ -561,7 +516,6 @@ async fn main() -> Result<()> {
                 .unwrap_or(&serde_json::Value::Null)
                 .as_str()
                 .unwrap_or("");
-
             let elf_value = request_body
                 .get("elf")
                 .or_else(|| request_body.get("elf_blob_id"))
@@ -569,23 +523,14 @@ async fn main() -> Result<()> {
                 .as_str()
                 .unwrap_or("");
 
-            let canonical_string = if !elf_filename.is_empty() {
-                format!(
-                    "proof:{}\nelf:{}\nproof_filename:{}\nelf_filename:{}\nproving_system:{}",
-                    proof_value,
-                    elf_value,
-                    proof_filename,
-                    elf_filename,
-                    format!("{:?}", proving_system).to_lowercase()
-                )
-            } else {
-                format!(
-                    "proof:{}\nproof_filename:{}\nproving_system:{}",
-                    proof_value,
-                    proof_filename,
-                    format!("{:?}", proving_system).to_lowercase()
-                )
-            };
+            let canonical_string = format!(
+                "proof:{}\nelf:{}\nproof_filename:{}\nelf_filename:{}\nproving_system:{}",
+                proof_value,
+                elf_value,
+                proof_filename,
+                elf_filename,
+                format!("{:?}", proving_system).to_lowercase()
+            );
 
             request_body["canonical_string"] = serde_json::Value::String(canonical_string.clone());
 

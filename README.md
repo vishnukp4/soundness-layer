@@ -7,3 +7,7 @@ Soundness Layer is a decentralized verification layer that provides low latency,
 [Twitter (X)](https://x.com/SoundnessLabs) | [Discord](https://discord.gg/SoundnessLabs) | [Telegram](https://t.me/SoundnessLabs) | [Website](https://soundness.xyz/)
 
 > ⚠️ **Warning**: This is a testnet implementation. Do not use in production. The protocol is still under development and may contain bugs or security vulnerabilities. We are gradually rolling out features and open sourcing components as we progress through our development roadmap.
+
+## License
+
+This project is licensed under the [MIT License](./LICENSE).
